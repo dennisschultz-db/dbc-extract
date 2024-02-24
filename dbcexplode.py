@@ -3,6 +3,7 @@ from __future__ import print_function
 import json
 import sys
 import os
+import zipfile
 
 def getLangPrefix(cmdstr):
   prefix = cmdstr.splitlines()[0] if len(cmdstr) > 0 else ''
@@ -14,25 +15,15 @@ def getLangPrefix(cmdstr):
 
   return prefix
     
-def getExtension(notebook, command):
+def getExtension(notebook):
   extMap = {
     'python': 'py',
     'md': 'md',
     'sql': 'sql',
     'scala': 'scala',
   }
-  cmdstr = command['command']
-  if len(cmdstr) == 0:
-    return
-  
-  prefix = getLangPrefix(cmdstr)
-  ext = extMap[prefix] if prefix in extMap else None
-  
-  if ext is None:
-    ext = extMap.get(notebook['language'])
-    
-  return ext if ext is not None else '' 
-  
+  return extMap.get(notebook['language'])
+      
 def outdir(inputFile):
   outdir = inputFile + '-exploded'
   if not (os.path.exists(outdir) and os.path.isdir(outdir)):
@@ -43,7 +34,7 @@ def processjsonfile(filepath):
   with open(filepath) as f:
     try:
       notebook = json.loads(f.read())
-    except ValueError, e:
+    except ValueError as e:
       notebook = None
       pass
 
@@ -52,33 +43,43 @@ def processjsonfile(filepath):
     print('SKIPPING file, ', filepath, '. Not a notebook.')
     return
   
-  # prepare output dir:
-  dir = outdir(filepath)
-
-  print(os.path.basename(filepath), '->', os.path.basename(dir))
-
   notebookName = notebook['name']
   commands = notebook['commands']
-  commandNo = 0
-  for command in commands:
-    commandNo += 1
-    cmdstr = command['command']
-    if len(cmdstr) > 0:
-      if len(getLangPrefix(cmdstr)) > 0:
-        # it has a language prefix (e.g. %python ), so remove that prefix
-        lines = cmdstr.splitlines()
-        cmdstr = '\n'.join(lines[1:])
-      
-      ext = getExtension(notebook, command)
-      path = os.path.join(dir, notebookName + str(commandNo) + '.' + ext)
-      
-      with open(path, 'w') as f:
-        f.write(cmdstr.encode('utf-8'))
+
+  # prepare output dir:
+  dir = os.path.dirname(filepath)
+  ext = getExtension(notebook)
+  outfilepath = os.path.join(dir, notebookName + '.' + ext)
+
+  print(os.path.basename(filepath), '->', os.path.basename(outfilepath))
+
+  with open(outfilepath, 'wb') as f:
+    f.write(('# Databricks notebook source\n').encode('utf-8'))
+    first = True
+    for command in commands:
+      commandNo = command['position']
+      # Skip if not a whole number
+      if (not commandNo.is_integer()):
+        continue
+
+      if (first):
+        first = False
+      else:
+        f.write(('\n# COMMAND ----------\n\n').encode('utf-8'))
+
+
+      cmdstr = command['command']
+      if len(cmdstr) > 0:      
+        cmdlines = cmdstr.splitlines()
+        for cmdline in cmdlines:
+          f.write(('# MAGIC ').encode('utf-8') + cmdline.encode('utf-8') + ('\n').encode('utf-8'))
+
+  os.remove(filepath)
+
+
 
 def iszipfile(filepath):
-  with open(filepath, 'r') as f:
-    bits = f.read(3)
-    return len(bits) == 3 and bits[0] == 'P' and bits[1] == 'K' and bits[2] == '\x03'
+  return zipfile.is_zipfile(filepath);
 
 def processdir(filepath, deleteFileAfter=False):
   for dir, dirs, files in os.walk(filepath):
@@ -94,7 +95,7 @@ def processzipfile(filepath):
   destDir = tempfile.mkdtemp()
   with ZipFile(filepath, 'r') as dbc:
     dbc.extractall(destDir)
-  processdir(destDir, deleteFileAfter=True)
+  processdir(destDir, deleteFileAfter=False)
   from shutil import move
   move(destDir, filepath + '-exploded')
   
